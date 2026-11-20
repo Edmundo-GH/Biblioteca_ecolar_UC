@@ -1,0 +1,10 @@
+[
+  {
+    "id": "P0001",
+    "nombre": "mesa",
+    "descripcion": "mesa de trabajo de madera para 8 peronas",
+    "cantidad": 7,
+    "tipo": "Mobiliario",
+    "material": ""
+  }
+]
