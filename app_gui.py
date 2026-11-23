@@ -4,14 +4,17 @@ app_gui.py
 Interfaz CustomTkinter con:
 - Préstamos (registro rápido + AppSheet)
 - Servicios / Estancia (con lista visible y export a Excel)
+- Inventario (Mobiliario, Libros detallados, Equipos) con búsqueda, modificación y exportación
 - Reportes con selector Escuela/Grado/Grupo
 - Memoria persistente
 """
 
 from __future__ import annotations
 import os
+import json
 import tkinter as tk
 from tkinter import filedialog, messagebox
+import tkinter.ttk as ttk
 from datetime import datetime
 from pathlib import Path
 
@@ -26,6 +29,8 @@ from motor_datos import (
     calcular_kpis_servicios, construir_df_servicios,
 )
 from persistencia import cargar_repositorio, guardar_repositorio
+# Importamos las clases del inventario (Actividad 4)
+from modelos import Mobiliario, LibroInventario, EquipoComputo
 
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
@@ -34,6 +39,7 @@ COLOR_PRIM = "#1F497D"
 COLOR_OK   = "#2E7D32"
 COLOR_ERR  = "#C62828"
 COLOR_BG   = "#F5F7FA"
+ARCHIVO_INVENTARIO = Path("inventario.json")
 
 
 class BibliotecaApp(ctk.CTk):
@@ -45,6 +51,7 @@ class BibliotecaApp(ctk.CTk):
         self.repo = BibliotecaRepositorio()
         self.kpis_cache = None
         self.kpis_serv_cache = None
+        self.inventario = []  # Lista para el inventario
 
         self._msg_inicial = None
         if cargar_repositorio(self.repo):
@@ -55,11 +62,72 @@ class BibliotecaApp(ctk.CTk):
         else:
             self._msg_inicial = "Sesión nueva. Carga el padrón (⚙️ Configuración)."
 
+        # Cargar inventario desde JSON si existe
+        self._cargar_inventario_desde_json()
+
         self._build_header()
         self._build_tabs()
 
         self.after(30_000, self._autoguardar)
         self.protocol("WM_DELETE_WINDOW", self._al_cerrar)
+
+    # ================= PERSISTENCIA DEL INVENTARIO =================
+    def _cargar_inventario_desde_json(self):
+        """Carga el inventario desde el archivo JSON si existe."""
+        if not ARCHIVO_INVENTARIO.exists():
+            return
+        try:
+            with open(ARCHIVO_INVENTARIO, "r", encoding="utf-8") as f:
+                datos = json.load(f)
+            for item in datos:
+                tipo = item.get("tipo", "")
+                if tipo == "Mobiliario":
+                    prod = Mobiliario(
+                        item["id"], item["nombre"], item["descripcion"],
+                        item["cantidad"], item.get("material", "")
+                    )
+                elif tipo == "Libro":
+                    prod = LibroInventario(
+                        item["id"], item["nombre"], item["descripcion"],
+                        item["cantidad"], item.get("autor", ""),
+                        item.get("isbn", ""), item.get("estado", "Disponible")
+                    )
+                elif tipo == "Equipo de Cómputo":
+                    prod = EquipoComputo(
+                        item["id"], item["nombre"], item["descripcion"],
+                        item["cantidad"], item.get("marca", "")
+                    )
+                else:
+                    continue
+                self.inventario.append(prod)
+        except Exception as e:
+            print(f"Error cargando inventario: {e}")
+
+    def _guardar_inventario_json(self):
+        """Guarda el inventario en un archivo JSON."""
+        datos = []
+        for prod in self.inventario:
+            item = {
+                "id": prod.id_producto,
+                "nombre": prod.nombre,
+                "descripcion": prod.descripcion,
+                "cantidad": prod.cantidad,
+                "tipo": prod.tipo_producto(),
+            }
+            if isinstance(prod, LibroInventario):
+                item["autor"] = prod.autor
+                item["isbn"] = prod.isbn
+                item["estado"] = prod.estado
+            elif isinstance(prod, Mobiliario):
+                item["material"] = prod.material
+            elif isinstance(prod, EquipoComputo):
+                item["marca"] = prod.marca
+            datos.append(item)
+        try:
+            with open(ARCHIVO_INVENTARIO, "w", encoding="utf-8") as f:
+                json.dump(datos, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Error guardando inventario: {e}")
 
     # ================= HEADER =================
     def _build_header(self):
@@ -76,7 +144,8 @@ class BibliotecaApp(ctk.CTk):
 
     def _texto_header(self):
         return (f"Padrón: {len(self.repo.alumnos)} alumnos · "
-                f"Registros: {len(self.repo.registros)}")
+                f"Registros: {len(self.repo.registros)} · "
+                f"Inventario: {len(self.inventario)} productos")
 
     def _actualizar_header(self):
         self.lbl_estado.configure(text=self._texto_header())
@@ -87,11 +156,13 @@ class BibliotecaApp(ctk.CTk):
         self.tabs.pack(fill="both", expand=True, padx=10, pady=10)
         self.tab_prestamos = self.tabs.add("📖 Préstamos")
         self.tab_servicios = self.tabs.add("🏫 Servicios / Estancia")
+        self.tab_inventario = self.tabs.add("📦 Inventario")
         self.tab_reportes  = self.tabs.add("📊 Reportes y Analítica")
         self.tab_config    = self.tabs.add("⚙️ Configuración")
 
         self._build_prestamos(self.tab_prestamos)
         self._build_servicios(self.tab_servicios)
+        self._build_inventario(self.tab_inventario)
         self._build_reportes(self.tab_reportes)
         self._build_config(self.tab_config)
 
@@ -257,6 +328,335 @@ class BibliotecaApp(ctk.CTk):
 
         self._refrescar_servicios()
 
+    # ================= INVENTARIO =================
+    def _build_inventario(self, parent):
+        main_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # --- Panel Izquierdo: Formulario ---
+        form_frame = ctk.CTkFrame(main_frame, width=350)
+        form_frame.pack(side="left", fill="y", padx=(0, 10))
+        form_frame.pack_propagate(False)
+
+        ctk.CTkLabel(form_frame, text="➕ Agregar Producto",
+                     font=ctk.CTkFont(size=16, weight="bold")
+                     ).pack(pady=(10, 5), padx=10, anchor="w")
+
+        # Tipo de producto
+        ctk.CTkLabel(form_frame, text="Tipo:").pack(padx=10, anchor="w")
+        self.cmb_tipo_prod = ctk.CTkComboBox(
+            form_frame, values=["Mobiliario", "Libro Detallado", "Equipo de Cómputo"],
+            command=self._cambiar_formulario_inventario
+        )
+        self.cmb_tipo_prod.pack(padx=10, pady=(0, 10), fill="x")
+
+        # Campos comunes
+        self.entry_inv_nombre = self._crear_campo(form_frame, "Nombre (ej. Sillas)")
+        self.entry_inv_desc = self._crear_campo(form_frame, "Descripción")
+        self.entry_inv_cant = self._crear_campo(form_frame, "Cantidad")
+
+        # Frame para campos específicos
+        self.frame_especifico = ctk.CTkFrame(form_frame, fg_color="transparent")
+        self.frame_especifico.pack(fill="x", padx=10, pady=5)
+        self.entry_especifico = None
+
+        # Botón Guardar
+        ctk.CTkButton(form_frame, text="✅ Guardar Producto",
+                      command=self._agregar_producto_inventario,
+                      fg_color=COLOR_OK, height=40
+                      ).pack(padx=10, pady=20, fill="x")
+
+        # --- Panel Derecho: Tabla ---
+        table_frame = ctk.CTkFrame(main_frame)
+        table_frame.pack(side="right", fill="both", expand=True)
+
+        ctk.CTkLabel(table_frame, text="📋 Inventario General",
+                     font=ctk.CTkFont(size=16, weight="bold")
+                     ).pack(pady=10, anchor="w")
+
+        # --- Barra de búsqueda ---
+        search_frame = ctk.CTkFrame(table_frame, fg_color="transparent")
+        search_frame.pack(fill="x", padx=10, pady=(5, 0))
+        ctk.CTkLabel(search_frame, text="🔍 Buscar:").pack(side="left", padx=(0, 5))
+        self.entry_buscar_inv = ctk.CTkEntry(search_frame, placeholder_text="Nombre, tipo o descripción...")
+        self.entry_buscar_inv.pack(side="left", fill="x", expand=True)
+        self.entry_buscar_inv.bind("<KeyRelease>", lambda e: self._refrescar_inventario())
+
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("Treeview", rowheight=25, font=("Segoe UI", 10))
+        style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"))
+
+        self.tabla_inv = ttk.Treeview(
+            table_frame, columns=("ID", "Nombre", "Desc", "Cantidad", "Tipo", "Extra"),
+            show="headings", height=15
+        )
+        self.tabla_inv.heading("ID", text="ID")
+        self.tabla_inv.heading("Nombre", text="Nombre")
+        self.tabla_inv.heading("Desc", text="Descripción")
+        self.tabla_inv.heading("Cantidad", text="Cantidad")
+        self.tabla_inv.heading("Tipo", text="Tipo")
+        self.tabla_inv.heading("Extra", text="Extra")
+
+        self.tabla_inv.column("ID", width=60, anchor="center")
+        self.tabla_inv.column("Nombre", width=120)
+        self.tabla_inv.column("Desc", width=150)
+        self.tabla_inv.column("Cantidad", width=70, anchor="center")
+        self.tabla_inv.column("Tipo", width=100)
+        self.tabla_inv.column("Extra", width=100)
+
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.tabla_inv.yview)
+        self.tabla_inv.configure(yscroll=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self.tabla_inv.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # --- Botones de acción ---
+        btn_frame = ctk.CTkFrame(table_frame, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=10, pady=5)
+        ctk.CTkButton(btn_frame, text="🔄 Refrescar", fg_color=COLOR_PRIM,
+                      command=self._refrescar_inventario).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="✏️ Modificar Cantidad", fg_color="#E65100",
+                      command=self._modificar_cantidad_inventario).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="🗑️ Eliminar", fg_color=COLOR_ERR,
+                      command=self._eliminar_producto).pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="📤 Exportar Reporte (Excel)", fg_color=COLOR_OK,
+                      command=self._exportar_inventario_excel).pack(side="left", padx=5)
+
+        self._refrescar_inventario()
+
+    # --- Funciones auxiliares del inventario ---
+    def _crear_campo(self, parent, placeholder):
+        entry = ctk.CTkEntry(parent, placeholder_text=placeholder)
+        entry.pack(padx=10, pady=5, fill="x")
+        return entry
+
+    def _cambiar_formulario_inventario(self, tipo):
+        for widget in self.frame_especifico.winfo_children():
+            widget.destroy()
+
+        if tipo == "Libro Detallado":
+            ctk.CTkLabel(self.frame_especifico, text="Autor:").pack(anchor="w")
+            self.entry_especifico = ctk.CTkEntry(self.frame_especifico)
+            self.entry_especifico.pack(fill="x", pady=(0, 5))
+            ctk.CTkLabel(self.frame_especifico, text="ISBN:").pack(anchor="w")
+            self.entry_isbn = ctk.CTkEntry(self.frame_especifico)
+            self.entry_isbn.pack(fill="x")
+        elif tipo == "Mobiliario":
+            ctk.CTkLabel(self.frame_especifico, text="Material:").pack(anchor="w")
+            self.entry_especifico = ctk.CTkEntry(self.frame_especifico)
+            self.entry_especifico.pack(fill="x")
+        elif tipo == "Equipo de Cómputo":
+            ctk.CTkLabel(self.frame_especifico, text="Marca:").pack(anchor="w")
+            self.entry_especifico = ctk.CTkEntry(self.frame_especifico)
+            self.entry_especifico.pack(fill="x")
+
+    def _agregar_producto_inventario(self):
+        nombre = self.entry_inv_nombre.get().strip()
+        desc = self.entry_inv_desc.get().strip()
+        try:
+            cantidad = int(self.entry_inv_cant.get())
+        except ValueError:
+            messagebox.showerror("Error", "La cantidad debe ser un número.")
+            return
+        if not nombre:
+            messagebox.showerror("Error", "El nombre es obligatorio.")
+            return
+
+        tipo = self.cmb_tipo_prod.get()
+        id_prod = f"P{len(self.inventario) + 1:04d}"
+
+        try:
+            if tipo == "Mobiliario":
+                material = self.entry_especifico.get() if self.entry_especifico else ""
+                nuevo = Mobiliario(id_prod, nombre, desc, cantidad, material)
+            elif tipo == "Libro Detallado":
+                autor = self.entry_especifico.get() if self.entry_especifico else ""
+                isbn = self.entry_isbn.get() if hasattr(self, 'entry_isbn') else ""
+                nuevo = LibroInventario(id_prod, nombre, desc, cantidad, autor, isbn, "Disponible")
+            elif tipo == "Equipo de Cómputo":
+                marca = self.entry_especifico.get() if self.entry_especifico else ""
+                nuevo = EquipoComputo(id_prod, nombre, desc, cantidad, marca)
+            else:
+                messagebox.showerror("Error", "Tipo no válido.")
+                return
+
+            self.inventario.append(nuevo)
+            self._refrescar_inventario()
+            self._actualizar_header()
+            self._guardar_inventario_json()  # Persistencia
+            self._limpiar_formulario_inventario()
+            messagebox.showinfo("Éxito", f"Producto '{nombre}' agregado.")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def _limpiar_formulario_inventario(self):
+        self.entry_inv_nombre.delete(0, "end")
+        self.entry_inv_desc.delete(0, "end")
+        self.entry_inv_cant.delete(0, "end")
+        if self.entry_especifico:
+            self.entry_especifico.delete(0, "end")
+        if hasattr(self, 'entry_isbn'):
+            self.entry_isbn.delete(0, "end")
+
+    def _refrescar_inventario(self):
+        """Refresca la tabla del inventario, aplicando filtro de búsqueda si existe."""
+        for item in self.tabla_inv.get_children():
+            self.tabla_inv.delete(item)
+
+        # Obtener texto de búsqueda (si existe el campo)
+        filtro = ""
+        if hasattr(self, 'entry_buscar_inv'):
+            filtro = self.entry_buscar_inv.get().strip().lower()
+
+        for prod in self.inventario:
+            # Aplicar filtro
+            if filtro:
+                nombre = prod.nombre.lower()
+                tipo = prod.tipo_producto().lower()
+                desc = prod.descripcion.lower()
+                if filtro not in nombre and filtro not in tipo and filtro not in desc:
+                    continue
+
+            # Extraer detalles específicos según el tipo
+            extra = ""
+            if isinstance(prod, LibroInventario):
+                extra = f"Autor: {prod.autor}"
+            elif isinstance(prod, Mobiliario):
+                extra = f"Material: {prod.material}"
+            elif isinstance(prod, EquipoComputo):
+                extra = f"Marca: {prod.marca}"
+
+            self.tabla_inv.insert("", "end", values=(
+                prod.id_producto, prod.nombre, prod.descripcion,
+                prod.cantidad, prod.tipo_producto(), extra
+            ))
+
+    def _eliminar_producto(self):
+        sel = self.tabla_inv.selection()
+        if not sel:
+            messagebox.showwarning("Atención", "Selecciona un producto de la tabla.")
+            return
+        item = self.tabla_inv.item(sel[0])
+        id_prod = item['values'][0]
+        if not messagebox.askyesno("Confirmar", f"¿Eliminar el producto {id_prod}?"):
+            return
+        self.inventario = [p for p in self.inventario if p.id_producto != id_prod]
+        self._refrescar_inventario()
+        self._actualizar_header()
+        self._guardar_inventario_json()  # Persistencia
+        messagebox.showinfo("Eliminado", f"Producto {id_prod} eliminado.")
+
+    def _modificar_cantidad_inventario(self):
+        """Permite modificar la cantidad de un producto seleccionado."""
+        sel = self.tabla_inv.selection()
+        if not sel:
+            messagebox.showwarning("Atención", "Selecciona un producto de la tabla.")
+            return
+        item = self.tabla_inv.item(sel[0])
+        id_prod = item['values'][0]
+        nombre_prod = item['values'][1]
+        cantidad_actual = item['values'][3]
+
+        ventana = ctk.CTkToplevel(self)
+        ventana.title(f"Modificar cantidad: {nombre_prod}")
+        ventana.geometry("400x220")
+        ventana.grab_set()
+
+        ctk.CTkLabel(ventana, text=f"Producto: {nombre_prod}",
+                     font=ctk.CTkFont(size=14, weight="bold")).pack(pady=10)
+        ctk.CTkLabel(ventana, text=f"Cantidad actual: {cantidad_actual}").pack(pady=5)
+        ctk.CTkLabel(ventana, text="Nueva cantidad:").pack(pady=(10, 0))
+        entry_nueva = ctk.CTkEntry(ventana, width=150)
+        entry_nueva.pack(pady=5)
+        entry_nueva.insert(0, str(cantidad_actual))
+
+        def guardar():
+            try:
+                nueva_cant = int(entry_nueva.get())
+                if nueva_cant < 0:
+                    messagebox.showerror("Error", "La cantidad no puede ser negativa.")
+                    return
+                for prod in self.inventario:
+                    if prod.id_producto == id_prod:
+                        prod.cantidad = nueva_cant
+                        break
+                self._refrescar_inventario()
+                self._actualizar_header()
+                self._guardar_inventario_json()  # Persistencia
+                messagebox.showinfo("OK", f"Cantidad actualizada a {nueva_cant}.")
+                ventana.destroy()
+            except ValueError:
+                messagebox.showerror("Error", "Ingresa un número válido.")
+
+        ctk.CTkButton(ventana, text="✅ Guardar", command=guardar,
+                      fg_color=COLOR_OK).pack(pady=15)
+
+    def _exportar_inventario_excel(self):
+        """Exporta el inventario completo a un archivo Excel."""
+        if not self.inventario:
+            messagebox.showinfo("Sin datos", "No hay productos en el inventario.")
+            return
+
+        escritorio = Path.home() / "Desktop"
+        nombre = f"Inventario_Biblioteca_{datetime.now():%Y-%m-%d_%H%M}.xlsx"
+        ruta = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            initialdir=str(escritorio if escritorio.exists() else Path.home()),
+            initialfile=nombre,
+            filetypes=[("Excel", "*.xlsx")],
+        )
+        if not ruta:
+            return
+
+        try:
+            import pandas as pd
+            from openpyxl.styles import PatternFill, Font, Alignment
+
+            datos = []
+            for prod in self.inventario:
+                extra = ""
+                if isinstance(prod, LibroInventario):
+                    extra = f"Autor: {prod.autor} | ISBN: {prod.isbn}"
+                elif isinstance(prod, Mobiliario):
+                    extra = f"Material: {prod.material}"
+                elif isinstance(prod, EquipoComputo):
+                    extra = f"Marca: {prod.marca}"
+
+                datos.append({
+                    "ID": prod.id_producto,
+                    "Nombre": prod.nombre,
+                    "Descripción": prod.descripcion,
+                    "Cantidad": prod.cantidad,
+                    "Tipo": prod.tipo_producto(),
+                    "Detalles Extra": extra,
+                })
+
+            df = pd.DataFrame(datos)
+            with pd.ExcelWriter(ruta, engine="openpyxl") as writer:
+                df.to_excel(writer, sheet_name="Inventario", index=False)
+                ws = writer.sheets["Inventario"]
+                for c_idx in range(1, ws.max_column + 1):
+                    cell = ws.cell(row=1, column=c_idx)
+                    cell.fill = PatternFill("solid", start_color="1F497D")
+                    cell.font = Font(color="FFFFFF", bold=True)
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                ws.column_dimensions['A'].width = 10
+                ws.column_dimensions['B'].width = 25
+                ws.column_dimensions['C'].width = 35
+                ws.column_dimensions['D'].width = 12
+                ws.column_dimensions['E'].width = 20
+                ws.column_dimensions['F'].width = 40
+
+            self._log(f"Inventario exportado a Excel: {ruta}")
+            messagebox.showinfo("OK", f"Reporte exportado exitosamente:\n{ruta}")
+        except PermissionError:
+            messagebox.showerror("Archivo bloqueado",
+                                 f"El archivo está abierto en Excel. Ciérralo y vuelve a intentar:\n{ruta}")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Error", f"{type(e).__name__}: {e}")
+
     # ================= REPORTES =================
     def _build_reportes(self, parent):
         top = ctk.CTkFrame(parent)
@@ -311,7 +711,7 @@ class BibliotecaApp(ctk.CTk):
         self.txt_deudores = ctk.CTkTextbox(parent, height=140)
         self.txt_deudores.pack(fill="both", expand=True, padx=20, pady=(0, 10))
 
-    # ================= LÓGICA =================
+    # ================= LÓGICA GENERAL =================
     def _log(self, msg: str):
         if hasattr(self, "txt_log"):
             self.txt_log.insert("end", f"[{datetime.now():%H:%M:%S}] {msg}\n")
@@ -320,6 +720,7 @@ class BibliotecaApp(ctk.CTk):
     def _autoguardar(self):
         try:
             guardar_repositorio(self.repo)
+            self._guardar_inventario_json()  # Persistencia del inventario
         except Exception as e:
             print("Autoguardado falló:", e)
         self.after(30_000, self._autoguardar)
@@ -327,23 +728,28 @@ class BibliotecaApp(ctk.CTk):
     def _al_cerrar(self):
         try:
             guardar_repositorio(self.repo)
+            self._guardar_inventario_json()  # Persistencia del inventario
         except Exception as e:
             print("Guardado al cerrar falló:", e)
         self.destroy()
 
     def _borrar_memoria(self):
-        if not messagebox.askyesno("Confirmar", "¿Borrar TODA la memoria guardada?"):
+        if not messagebox.askyesno("Confirmar", "¿Borrar TODA la memoria guardada (incluyendo inventario)?"):
             return
         try:
             from persistencia import ARCHIVO_DATOS
             if ARCHIVO_DATOS.exists():
                 ARCHIVO_DATOS.unlink()
+            if ARCHIVO_INVENTARIO.exists():
+                ARCHIVO_INVENTARIO.unlink()
             self.repo.alumnos.clear()
             self.repo.registros.clear()
+            self.inventario.clear()
             self._actualizar_header()
             self._refrescar_servicios()
             self._refrescar_tabla_movimientos()
-            self._log("Memoria borrada.")
+            self._refrescar_inventario()
+            self._log("Memoria borrada (incluyendo inventario).")
         except Exception as e:
             messagebox.showerror("Error", str(e))
 

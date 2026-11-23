@@ -1,15 +1,4 @@
-"""
-modelos.py
-----------
-Define la estructura de clases del sistema (requisito académico POO + Herencia).
 
-Jerarquía:
-    Alumno            -> Entidad del padrón
-    PrestamoLibro     -> Entidad de préstamo individual (usada en el CSV de AppSheet)
-    RegistroBiblioteca (ABSTRACTA)  -> Clase padre de cualquier registro de servicio
-        ├── Prestamo            -> Salida/devolución de libro
-        └── ServicioEstancia    -> Estancia, lectura, ajedrez, evento grupal, etc.
-"""
 
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -90,7 +79,7 @@ class PrestamoLibro:
 
 
 # =========================================================
-# CLASE ABSTRACTA: RegistroBiblioteca (PADRE)
+# CLASE  (PADRE)
 # =========================================================
 class RegistroBiblioteca(ABC):
     """
@@ -221,3 +210,77 @@ class ServicioEstancia(RegistroBiblioteca):
             "Cantidad_Personas": self.cantidad_personas,
             "Origen": self.origen,
         }
+# =========================================================
+# NUEVO MÓDULO: INVENTARIO 
+# =========================================================
+
+class IInventario(ABC):
+    """Interfaz para el control de inventario."""
+    @abstractmethod
+    def obtener_detalles_reporte(self) -> str:
+        pass
+
+    @abstractmethod
+    def ajustar_cantidad(self, cantidad: int) -> int:
+        pass
+
+
+class Producto(IInventario):
+    """Clase abstracta base para cualquier artículo del inventario."""
+    def __init__(self, id_producto: str, nombre: str, descripcion: str, cantidad: int):
+        self.id_producto = id_producto
+        self.nombre = nombre
+        self.descripcion = descripcion
+        self.cantidad = cantidad
+
+    @abstractmethod
+    def tipo_producto(self) -> str:
+        pass
+
+    def mostrar_info_basica(self) -> str:
+        return f"[{self.id_producto}] {self.nombre} | Cant: {self.cantidad} | {self.descripcion}"
+
+    def ajustar_cantidad(self, cantidad: int) -> int:
+        self.cantidad += cantidad
+        if self.cantidad < 0: self.cantidad = 0
+        return self.cantidad
+
+# --- Subclases ---
+
+class Mobiliario(Producto):
+    """Para sillas, mesas, estantes, cajones, etc."""
+    def __init__(self, id_producto, nombre, descripcion, cantidad, material):
+        super().__init__(id_producto, nombre, descripcion, cantidad)
+        self.material = material
+
+    def tipo_producto(self) -> str:
+        return "Mobiliario"
+
+    def obtener_detalles_reporte(self) -> str:
+        return f"{self.mostrar_info_basica()} | Material: {self.material}"
+
+class LibroInventario(Producto):
+    """Para el catálogo detallado de libros (uno a uno)."""
+    def __init__(self, id_producto, nombre, descripcion, cantidad, autor, isbn, estado="Disponible"):
+        super().__init__(id_producto, nombre, descripcion, cantidad)
+        self.autor = autor
+        self.isbn = isbn
+        self.estado = estado
+
+    def tipo_producto(self) -> str:
+        return "Libro"
+
+    def obtener_detalles_reporte(self) -> str:
+        return f"{self.mostrar_info_basica()} | Autor: {self.autor} | Estado: {self.estado}"
+
+class EquipoComputo(Producto):
+    """Para laptops, tablets, etc."""
+    def __init__(self, id_producto, nombre, descripcion, cantidad, marca):
+        super().__init__(id_producto, nombre, descripcion, cantidad)
+        self.marca = marca
+
+    def tipo_producto(self) -> str:
+        return "Equipo de Cómputo"
+
+    def obtener_detalles_reporte(self) -> str:
+        return f"{self.mostrar_info_basica()} | Marca: {self.marca}"
